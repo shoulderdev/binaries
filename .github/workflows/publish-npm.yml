@@ -1,0 +1,88 @@
+name: Publish npm packages
+
+# Fires when a release is published on this repo (shoulderdev/binaries).
+# The release event proves the binaries + SHA256SUMS.txt are already uploaded,
+# so no polling is needed. The workflow downloads those assets, verifies
+# checksums, stages them into the per-platform npm packages, and publishes
+# @shoulderdev/cli plus the 6 platform variants with provenance via the
+# npm Trusted Publisher (OIDC) configured for this repo.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write  # OIDC for npm Trusted Publisher + provenance
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Resolve tag
+        id: tag
+        # Inputs and event payload values are passed through env vars, never
+        # interpolated into the shell script. Direct `${{ inputs.tag }}` in a
+        # `run:` block is a shell injection sink — workflow_dispatch inputs and
+        # release payload fields are attacker-influenceable.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_dispatch) TAG="$INPUT_TAG" ;;
+            release)           TAG="$RELEASE_TAG" ;;
+            *) echo "error: unexpected event $EVENT_NAME" >&2; exit 1 ;;
+          esac
+          # Strict allowlist before TAG is ever used in a shell command.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: tag '$TAG' is not a valid vX.Y.Z[-pre] tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4
+        with:
+          # Node 24 ships npm 11 natively, which is required for Trusted
+          # Publisher OIDC publish auth (npm >= 11.5.1 per npm docs).
+          # Node 22 ships npm 10 and `npm install -g npm@11` fails on the
+          # in-place self-upgrade due to a known arborist dep-tree bug.
+          #
+          # Intentionally NOT setting `registry-url`. setup-node writes an
+          # .npmrc with `_authToken=${NODE_AUTH_TOKEN}` + `always-auth=true`,
+          # which makes npm see an empty auth method and skip the Trusted
+          # Publisher OIDC exchange — publish lands unauthenticated → 404.
+          node-version: '24'
+
+      - name: Clean any stale .npmrc the runner image shipped
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$HOME/.npmrc" "$RUNNER_TEMP/.npmrc" .npmrc
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NPM_CONFIG_LOGLEVEL: verbose
+        shell: bash
+        run: ./cli-packages/scripts/publish.sh "$TAG"
