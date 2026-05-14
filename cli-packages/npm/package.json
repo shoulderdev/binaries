@@ -1,0 +1,43 @@
+{
+  "name": "@shoulderdev/cli",
+  "version": "0.0.0",
+  "description": "Shoulder — local-first trust scanner for developers and AI coding agents.",
+  "homepage": "https://shoulder.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shoulderdev/binaries.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shoulderdev/feedback/issues"
+  },
+  "author": "Shoulder.dev",
+  "keywords": [
+    "security",
+    "sast",
+    "supply-chain",
+    "trust",
+    "shoulder",
+    "shoulderdev"
+  ],
+  "bin": {
+    "shoulder": "bin/shoulder.js"
+  },
+  "type": "module",
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@shoulderdev/cli-linux-x64": "npm:@shoulderdev/cli@0.0.0-linux-x64",
+    "@shoulderdev/cli-linux-arm64": "npm:@shoulderdev/cli@0.0.0-linux-arm64",
+    "@shoulderdev/cli-darwin-x64": "npm:@shoulderdev/cli@0.0.0-darwin-x64",
+    "@shoulderdev/cli-darwin-arm64": "npm:@shoulderdev/cli@0.0.0-darwin-arm64",
+    "@shoulderdev/cli-win32-x64": "npm:@shoulderdev/cli@0.0.0-win32-x64",
+    "@shoulderdev/cli-win32-arm64": "npm:@shoulderdev/cli@0.0.0-win32-arm64"
+  }
+}

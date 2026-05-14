@@ -1,0 +1,11 @@
+# Vendored binaries are populated at publish time by scripts/publish.sh.
+# Keep the directories (via .gitkeep) but don't commit the binaries themselves.
+npm-*/vendor/shoulder
+npm-*/vendor/shoulder.exe
+
+# Local install artefacts
+**/node_modules/
+**/package-lock.json
+
+# Claude Code local settings — never publish to a public repo
+**/.claude/

@@ -1,0 +1,26 @@
+{
+  "name": "@shoulderdev/cli",
+  "version": "0.0.0-darwin-x64",
+  "description": "Shoulder CLI — darwin-x64 native binary.",
+  "homepage": "https://shoulder.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shoulderdev/binaries.git"
+  },
+  "author": "Shoulder.dev",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "vendor"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
