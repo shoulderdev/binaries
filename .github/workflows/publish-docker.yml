@@ -1,0 +1,191 @@
+name: Publish Docker image
+
+# Fires when a release is published on this repo (shoulderdev/binaries).
+# The release event proves the linux binaries + SHA256SUMS.txt are already
+# uploaded by the source-repo release workflow. This workflow downloads those
+# assets, verifies checksums, builds a multi-arch image from
+# docker/Dockerfile.release, pushes to ghcr.io/shoulderdev/cli, and signs by
+# digest with cosign (keyless / Sigstore).
+#
+# Why this lives here, not in shouldersec-go: the package on GHCR gets
+# associated with whichever repo's GITHUB_TOKEN pushed it. Pushing from
+# shouldersec-go (private) leaked the source repo name in the package UI.
+# Publishing here keeps the public artifact published from the public repo.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.0.3)'
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: publish-docker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/shoulderdev/cli
+
+jobs:
+  publish:
+    name: Publish to GHCR
+    runs-on: ubuntu-latest
+    environment: docker-publish
+    permissions:
+      contents: read
+      packages: write   # push to ghcr.io
+      id-token: write   # cosign keyless signing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Resolve tag
+        id: tag
+        # Inputs and event payload values are passed through env vars, never
+        # interpolated into the shell script. Direct `${{ inputs.tag }}` in a
+        # `run:` block is a shell injection sink — workflow_dispatch inputs
+        # and release payload fields are attacker-influenceable.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            workflow_dispatch) TAG="$INPUT_TAG"; PRERELEASE="false" ;;
+            release)           TAG="$RELEASE_TAG"; PRERELEASE="$RELEASE_PRERELEASE" ;;
+            *) echo "error: unexpected event $EVENT_NAME" >&2; exit 1 ;;
+          esac
+          # Strict allowlist before TAG is ever used in a shell command.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: tag '$TAG' is not a valid vX.Y.Z[-pre] tag" >&2
+            exit 1
+          fi
+          # workflow_dispatch path: derive prerelease from the tag suffix
+          # (matches the prepare job in the source-repo release workflow).
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$TAG" == *"-rc."* || "$TAG" == *"-beta."* || "$TAG" == *"-alpha."* ]]; then
+              PRERELEASE="true"
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Compute image tags
+        id: tags
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAGS="${IMAGE}:${TAG}"
+          # :latest only moves on stable releases. Prerelease tags
+          # (-rc/-beta/-alpha) get the version tag only.
+          if [[ "$PRERELEASE" == "false" ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download linux binaries + checksums from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build-context
+          cd build-context
+          gh release download "$TAG" \
+            --pattern 'shoulder-linux-amd64' \
+            --pattern 'shoulder-linux-arm64' \
+            --pattern 'SHA256SUMS.txt'
+
+          # Sanity check: all three must be present.
+          for f in shoulder-linux-amd64 shoulder-linux-arm64 SHA256SUMS.txt; do
+            if [[ ! -f "$f" ]]; then
+              echo "error: missing required release asset '$f'" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build-context
+          # SHA256SUMS.txt lists every release asset; filter to the two
+          # linux binaries and verify only those. shasum -c exits non-zero
+          # on any mismatch.
+          grep -E '  shoulder-linux-(amd64|arm64)$' SHA256SUMS.txt > linux.sha256
+          shasum -a 256 -c linux.sha256
+
+      - name: Copy Dockerfile into build context
+        shell: bash
+        run: cp docker/Dockerfile.release build-context/Dockerfile
+
+      # QEMU is required because the alpine RUN steps (apk add, chmod) execute
+      # under the target platform; buildx emulates arm64 on this amd64 runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf  # v3.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349  # v3.7.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567  # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        id: build
+        uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75  # v6.9.0
+        with:
+          context: build-context
+          file: build-context/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: true
+          sbom: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3
+
+      - name: Sign image with cosign (keyless / Sigstore)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ env.IMAGE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Sign by digest so the signature binds to immutable bytes; both
+          # the version tag and :latest resolve to the same digest, so one
+          # signature covers all tags pushed in this run.
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          echo "Verify with:"
+          echo "  cosign verify ${IMAGE}@${DIGEST} \\"
+          echo "    --certificate-identity-regexp 'https://github.com/${GITHUB_REPOSITORY}' \\"
+          echo "    --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+
+      - name: Smoke test pulled image
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm "${IMAGE}@${DIGEST}" version

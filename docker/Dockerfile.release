@@ -1,0 +1,28 @@
+# Runtime image for the shouldersec CLI, published to ghcr.io/shoulderdev/cli.
+#
+# Build context is the directory containing the linux binaries downloaded from
+# the GitHub release on this repo (shoulderdev/binaries). Filenames must be
+# `shoulder-linux-amd64` and `shoulder-linux-arm64` — these are the same bytes
+# uploaded as release assets, so the image and the binary asset are
+# byte-identical.
+#
+# Multi-arch via buildx: TARGETARCH is set to `amd64` or `arm64` by buildx,
+# which matches the binary filename suffix.
+
+FROM alpine:3.21
+
+ARG TARGETARCH
+
+# Anchors the GHCR package to shoulderdev/binaries (not the private source
+# repo). GHCR uses this label to associate the published package with a repo
+# in the org's package UI.
+LABEL org.opencontainers.image.source="https://github.com/shoulderdev/binaries"
+LABEL org.opencontainers.image.description="Shoulder.dev CLI"
+LABEL org.opencontainers.image.licenses="LicenseRef-Proprietary"
+
+RUN apk add --no-cache git ca-certificates curl
+
+COPY shoulder-linux-${TARGETARCH} /usr/local/bin/shoulder
+RUN chmod +x /usr/local/bin/shoulder
+
+ENTRYPOINT ["/usr/local/bin/shoulder"]
